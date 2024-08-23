@@ -1,5 +1,5 @@
 # Base-Stage
-FROM condaforge/miniforge3 AS base
+FROM opennmt/ctranslate2:latest-ubuntu20.04-cuda11.2 AS base
 LABEL maintainer="Julian Reith <julianreith@gmx.de>"
 LABEL description="Docker container for whisper-gui - A simple GUI made with gradio to use Whisper from https://github.com/Pikurrot/whisper-gui"
 
@@ -15,24 +15,49 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
         ffmpeg \
         git \
         vim \
-        wget && \
+        wget \
+        bzip2 \
+        ca-certificates \
+        sudo \
+        pciutils \
+        jq && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
-    
-# create conda env and clone whisper-gui
+
+# Setup Miniconda
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
+    bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/conda && \
+    rm Miniconda3-latest-Linux-x86_64.sh && \
+    /opt/conda/bin/conda init && \
+    /opt/conda/bin/conda config --set always_yes yes --set changeps1 no && \
+    /opt/conda/bin/conda update -q conda && \
+    /opt/conda/bin/conda clean -a -y
+
+ENV PATH="/opt/conda/bin:$PATH"
+
+# Clone the repository
+WORKDIR /whisper-gui
+RUN git clone https://github.com/Pikurrot/whisper-gui .
+COPY configs/config.json configs/config.json
+
+# Replace the original main.py with your updated main.py (TEMPORARY, just for debugging, this main.py is same but with prints)
+COPY main.py /whisper-gui/main.py
+
+# Create conda environment and install CUDA dependencies
 SHELL ["bash", "-c"]
 RUN conda create --name whisper-gui python=3.10 -y && \
-    conda clean -a -y && \
-    echo "conda activate whisper-gui" >> ~/.bashrc && \
+    conda clean -a -y
+
+RUN echo "conda activate whisper-gui" >> ~/.bashrc && \
     source /opt/conda/etc/profile.d/conda.sh && \
     conda activate whisper-gui && \
-    pip install gradio torch==2.0.0 torchaudio==2.0.1 && \
+    echo "NVIDIA GPU detected. Enabling CUDA support in config.json..." && \
+    jq '.gpu_support = "cuda"' configs/config.json > tmp.json && mv tmp.json configs/config.json && \
+    pip install torch==2.0.0 torchaudio==2.0.1 && \
     pip install git+https://github.com/m-bain/whisperx.git && \
-    git clone https://github.com/Pikurrot/whisper-gui
+    pip install gradio
 
-# prepare whisper-gui
-WORKDIR /whisper-gui
-COPY configs/config.json configs/config.json
+# Prepare whisper-gui
 RUN touch /VERSION && \
     latest_tag=$(git describe --tags $(git rev-list --tags --max-count=1)) && \
     echo "whisper-gui=$latest_tag" > /VERSION && \    
@@ -41,7 +66,7 @@ RUN touch /VERSION && \
     chmod +x *.py scripts/*.py && \
     chmod +x *.sh scripts/*.sh
 
-# setup entrypoint
+# Setup entrypoint
 COPY docker-entrypoint.sh /
 RUN chmod +x /docker-entrypoint.sh
 ENTRYPOINT ["/docker-entrypoint.sh"]
